@@ -19,6 +19,8 @@ namespace DI
             return ((DIEntry<T>)this).Resolve();
         }
 
+        public abstract object ResolveObject();
+
         public DIEntry AsSingle()
         {
             IsSingleton = true;
@@ -61,6 +63,8 @@ namespace DI
             return _factory(Container);
         }
 
+        public override object ResolveObject() => Resolve();
+
         public override void Dispose()
         {
             if (IsSingleton && _instance is IDisposable disposable)
@@ -71,5 +75,4 @@ namespace DI
             _instance = default;
         }
     }
-
 }
