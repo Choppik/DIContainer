@@ -31,24 +31,18 @@ namespace DI
 
     public class DIEntry<T> : DIEntry
     {
-        private Func<DIContainer, T> Factory { get; }
+        private Func<DIContainer, T> _factory { get; }
         private T _instance;
         private IDisposable _disposableInstance;
 
         public DIEntry(DIContainer container, Func<DIContainer, T> factory) : base(container)
         {
-            Factory = factory;
+            _factory = factory;
         }
 
         public DIEntry(T value)
         {
             _instance = value;
-
-            if (_instance is IDisposable disposableInstance)
-            {
-                _disposableInstance = disposableInstance;
-            }
-
             IsSingleton = true;
         }
 
@@ -58,23 +52,23 @@ namespace DI
             {
                 if (_instance == null)
                 {
-                    _instance = Factory(Container);
-
-                    if (_instance is IDisposable disposableInstance)
-                    {
-                        _disposableInstance = disposableInstance;
-                    }
+                    _instance = _factory(Container);
                 }
 
                 return _instance;
             }
 
-            return Factory(Container);
+            return _factory(Container);
         }
 
         public override void Dispose()
         {
-            _disposableInstance?.Dispose();
+            if (IsSingleton && _instance is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+
+            _instance = default;
         }
     }
 

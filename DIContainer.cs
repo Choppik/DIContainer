@@ -88,9 +88,7 @@ namespace DI
 
         public void Dispose()
         {
-            var entries = _entriesMap.Values;
-
-            foreach (var entry in entries)
+            foreach (var entry in _entriesMap.Values)
             {
                 entry.Dispose();
             }
