@@ -4,7 +4,9 @@ namespace DI
 {
     public abstract class DIEntry : IDisposable
     {
+        // Контейнер сущности.
         protected DIContainer Container { get; }
+        // Признак синглтона.
         protected bool IsSingleton { get; set; }
 
         protected DIEntry() { }
@@ -14,13 +16,23 @@ namespace DI
             Container = container;
         }
 
+        /// <summary>
+        /// Получение объекта из контейнера.
+        /// </summary>
+        /// <typeparam name="T">Тип объкта.</typeparam>
         public T Resolve<T>()
         {
             return ((DIEntry<T>)this).Resolve();
         }
 
+        /// <summary>
+        /// Специальное получение объекта (с автоподставкой).
+        /// </summary>
         public abstract object ResolveObject();
 
+        /// <summary>
+        /// Установка признака синглтона.
+        /// </summary>
         public DIEntry AsSingle()
         {
             IsSingleton = true;
@@ -35,14 +47,13 @@ namespace DI
     {
         private Func<DIContainer, T> _factory { get; }
         private T _instance;
-        private IDisposable _disposableInstance;
 
         public DIEntry(DIContainer container, Func<DIContainer, T> factory) : base(container)
         {
             _factory = factory;
         }
 
-        public DIEntry(T value)
+        public DIEntry(DIContainer container, T value) : base(container)
         {
             _instance = value;
             IsSingleton = true;
@@ -65,6 +76,10 @@ namespace DI
 
         public override object ResolveObject() => Resolve();
 
+        /// <summary>
+        /// Освобождение ресурсов.
+        /// </summary>
+        /// <remarks>Освобождает только синглтоны и объекты реализующие IDisposable.</remarks>
         public override void Dispose()
         {
             if (IsSingleton && _instance is IDisposable disposable)
