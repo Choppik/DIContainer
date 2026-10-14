@@ -85,7 +85,7 @@ namespace DI
                     $"DI: Instance with tag {key.Item1} and type {key.Item2.FullName} has already registered");
             }
 
-            var diEntry = new DIEntry<T>(this, instance); // передаём контейнер
+            var diEntry = new DIEntry<T>(this, instance);
             _entriesMap[key] = diEntry;
         }
 
@@ -138,19 +138,75 @@ namespace DI
         /// <remarks>Это специальная регистрация с автоподстановкой данных.</remarks>
         public DIEntry RegisterType<T>() where T : class
         {
-            return RegisterFactory(c => c.ResolveWithConstructorInjection<T>()).AsSingle();
+            return RegisterFactory(c => (T)c.BuildByConstructor(typeof(T))).AsSingle();
         }
 
         /// <summary>
-        /// Специальное получение объекта из контейнера.
+        /// Начало создания объекта вместе с зависимостями.
         /// </summary>
-        /// <typeparam name="T">Тип обхекта.</typeparam>
-        /// <returns>Объект из контейнера.</returns>
-        /// <remarks>Возвращает объект, для которого все зависимые объекты будут созданы автоматически.
-        /// !!!Тег не учитывается!!!</remarks>
-        public T ResolveWithConstructorInjection<T>() where T : class
+        /// <param name="type">Тип объекта.</param>
+        /// <exception cref="InvalidOperationException">Ошибка, означающая, что не нашлось подходящего конструктора.</exception>
+        private object BuildByConstructor(Type type)
         {
-            return (T)ResolveByType(typeof(T));
+            ConstructorInfo[] constructors = (from c in type.GetConstructors()
+                                              orderby c.GetParameters().Length descending
+                                              select c).ToArray();
+
+            ConstructorInfo constructorInfo = null;
+            foreach (ConstructorInfo candidate in constructors)
+            {
+                bool canResolve = true;
+                foreach (ParameterInfo parameterInfo in candidate.GetParameters())
+                {
+                    if (!IsPrimitiveOrBuiltIn(parameterInfo.ParameterType) && !CanResolveType(parameterInfo.ParameterType))
+                    {
+                        canResolve = false;
+                        break;
+                    }
+                }
+
+                if (canResolve)
+                {
+                    constructorInfo = candidate;
+                    break;
+                }
+            }
+
+            if (constructorInfo == null)
+            {
+                throw new InvalidOperationException("DI: No suitable constructor found for '" + type.FullName +
+                                                    "'. Register all dependencies or add a constructor with primitive-only parameters.");
+            }
+
+            ParameterInfo[] parameters = constructorInfo.GetParameters();
+            object[] args = new object[parameters.Length];
+            for (int i = 0; i < parameters.Length; i++)
+            {
+                args[i] = ResolveParameter(parameters[i]);
+            }
+
+            return constructorInfo.Invoke(args);
+        }
+
+        /// <summary>
+        /// Получение из контейнера объекта по параметру.
+        /// </summary>
+        /// <param name="parameter">Данные параметра.</param>
+        private object ResolveParameter(ParameterInfo parameter)
+        {
+            Type parameterType = parameter.ParameterType;
+
+            if (IsPrimitiveOrBuiltIn(parameterType))
+            {
+                if (parameter.HasDefaultValue)
+                {
+                    return parameter.DefaultValue;
+                }
+
+                return parameterType.IsValueType ? Activator.CreateInstance(parameterType) : null;
+            }
+
+            return ResolveByType(parameterType);
         }
 
         /// <summary>
@@ -164,68 +220,30 @@ namespace DI
         private object ResolveByType(Type type)
         {
             if (_typeResolutionStack.Contains(type))
-                throw new InvalidOperationException(
-                    $"DI: Detected cyclic dependency while constructing type '{type.FullName}'.");
+            {
+                string chain = string.Join(" -> ", _typeResolutionStack.Select(t => t.Name).Append(type.Name));
+                throw new InvalidOperationException("DI: Detected cyclic dependency while constructing type: " + chain);
+            }
 
             _typeResolutionStack.Add(type);
-
             try
             {
                 var key = ((string)null, type);
-
-                if (_entriesMap.TryGetValue(key, out var entry))
-                    return entry.ResolveObject();
-
-                var constructors = type.GetConstructors()
-                    .OrderByDescending(c => c.GetParameters().Length)
-                    .ToArray();
-                ConstructorInfo selectedCtor = null;
-
-                foreach (var ctor in constructors)
+                if (_entriesMap.TryGetValue(key, out var value))
                 {
-                    var parameters = ctor.GetParameters();
-                    bool canBuild = true;
-
-                    foreach (var param in parameters)
-                    {
-                        if (IsPrimitiveOrBuiltIn(param.ParameterType))
-                            continue;
-
-                        if (!CanResolveType(param.ParameterType))
-                        {
-                            canBuild = false;
-                            break;
-                        }
-                    }
-
-                    if (canBuild)
-                    {
-                        selectedCtor = ctor;
-                        break;
-                    }
+                    return value.ResolveObject();
                 }
 
-                if (selectedCtor == null)
+                if (_parentContainer != null && _parentContainer.CanResolveType(type))
                 {
-                    throw new InvalidOperationException(
-                        $"DI: No suitable constructor found for '{type.FullName}'. " +
-                        "Register all dependencies or add a constructor with primitive-only parameters.");
+                    return _parentContainer.ResolveByType(type);
                 }
 
-                var args = new object[selectedCtor.GetParameters().Length];
-                var ctorParams = selectedCtor.GetParameters();
-
-                for (int i = 0; i < ctorParams.Length; i++)
-                {
-                    args[i] = ResolveByType(ctorParams[i].ParameterType);
-                }
-
-                return selectedCtor.Invoke(args);
+                return BuildByConstructor(type);
             }
-            catch
+            finally
             {
                 _typeResolutionStack.Remove(type);
-                throw;
             }
         }
 
@@ -266,6 +284,35 @@ namespace DI
             {
                 entry.Dispose();
             }
+        }
+
+        /// <summary>
+        /// Возвращает список всех зарегистрированных типов с учётом родительских контейнеров.
+        /// </summary>
+        /// <returns>Строки вида "[тег] ИмяТипа" с отступом по уровню контейнера.</returns>
+        /// <remarks>Для отладки.</remarks>
+        public IReadOnlyList<string> GetRegistrationsTree(int depth = 0)
+        {
+            var result = new List<string>();
+
+            if (_parentContainer != null)
+            {
+                result.AddRange(_parentContainer.GetRegistrationsTree(depth + 1));
+            }
+
+            string indent = new string(' ', depth * 4);
+            string header = _parentContainer == null
+                ? $"{indent}Root container:"
+                : $"{indent}Child container (parent depth {depth - 1}):";
+            result.Add(header);
+
+            foreach ((string tag, Type type) in _entriesMap.Keys)
+            {
+                string tagName = tag ?? "(без тега)";
+                result.Add($"{indent}  [{tagName}] {type.Name}");
+            }
+
+            return result;
         }
     }
 }
